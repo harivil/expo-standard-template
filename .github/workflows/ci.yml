@@ -2,6 +2,16 @@ name: CI
 
 on:
   pull_request:
+    # `edited` is NOT in the default set (opened, synchronize, reopened), and the `artifacts`
+    # job below reads the PR body — so without it, a body that cites the wrong artifact path
+    # stays red until someone pushes a commit, whether or not the body has since been fixed.
+    # A red check that cannot be cleared by fixing the actual problem is the kind everyone
+    # learns to scroll past, and it takes the real findings with it.
+    #
+    # The cost is that a body edit re-runs the whole workflow, not only the body-dependent
+    # job. That is a few runner minutes against a gate that can be cleared honestly, and the
+    # concurrency group above cancels the previous run rather than stacking them.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
