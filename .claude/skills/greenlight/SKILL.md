@@ -206,6 +206,16 @@ and does not fail the build. This repo has pre-existing placeholder and privacy 
 nobody is able to clear is a check everybody learns to scroll past — it takes the real findings with
 it. CI never edits source: it reports, and it passes or fails.
 
+**Findings in the Security tab prefixed `[project-level]` sit on `app.json:1`, and that line is not
+the defect.** GitHub's SARIF ingest rejects the whole file when any one result has an empty
+`locations` array — `locationFromSarifResult: expected at least one location` — and greenlight
+legitimately reports findings with no line to point at ("no app icon configured", "no privacy
+manifest", "required-reason API undeclared"). One of those took every other finding in the run with
+it, which is the worst failure available here: an upload that errors while the job looks like it
+scanned. `.claude/scripts/sarif-locations.mjs` anchors them to the file that configures what they are
+about and marks the message, so they are visible and not mistaken for a line-level defect. It never
+drops a result; if it cannot find an anchor it fails rather than uploading a thinner report.
+
 **The release gates enforce from the start.** They only run on a deliberate `v*` tag, they scan the
 `.ipa` and `.aab` the existing `production` build already produced — no extra build — and they are
 the last thing between this app and the stores. They also catch what no source scan can see: the

@@ -39,7 +39,7 @@ export default function LoginScreen() {
 
         <ThemedView style={styles.formSection}>
           <ThemedText type="title" style={styles.heading} maxFontSizeMultiplier={1.8}>
-            Welcome
+            10x Health Login
           </ThemedText>
           <ThemedText
             themeColor="textSecondary"

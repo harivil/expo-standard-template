@@ -13,6 +13,7 @@
 // Exit 0 = green. Exit 1 = failed or incomplete.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,39 +75,65 @@ function run(cmd, args) {
  * `required` distinguishes a check the team owns from one that needs a tool nobody is obliged
  * to install locally. A missing optional tool is a note; a missing required one makes the
  * whole run `incomplete`, because it means this receipt cannot stand in for CI.
+ *
+ * `job` names the GitHub Actions job this step stands in for, so a red check on github.com
+ * maps to one step here. It is also load-bearing: check-skills.mjs reads these and fails when
+ * a workflow declares a job that no step covers and no exemption explains. That is what stops
+ * this script's central claim — "it runs what CI runs" — from decaying the next time someone
+ * adds a job and not a step.
  */
 const STEPS = [
   {
     name: "format",
+    job: "verify",
     required: true,
     cmd: "npx",
     args: ["prettier", "--check", "."],
   },
-  { name: "types", required: true, cmd: "npx", args: ["tsc", "--noEmit"] },
-  { name: "lint", required: true, cmd: "npx", args: ["eslint", "."] },
-  { name: "test", required: true, cmd: "npx", args: ["jest", "--coverage"] },
+  { name: "types", job: "verify", required: true, cmd: "npx", args: ["tsc", "--noEmit"] },
+  { name: "lint", job: "verify", required: true, cmd: "npx", args: ["eslint", "."] },
+  {
+    name: "test",
+    job: "verify",
+    required: true,
+    cmd: "npx",
+    args: ["jest", "--coverage"],
+  },
   {
     name: "versions",
+    job: "verify",
     required: true,
     cmd: process.execPath,
     args: [resolve(CLAUDE_DIR, "scripts/version-check.mjs")],
   },
   {
     name: "hooks",
+    job: "agent-config",
     required: true,
     cmd: process.execPath,
     args: [resolve(CLAUDE_DIR, "hooks/hooks.test.mjs")],
   },
   {
     name: "skills",
+    job: "agent-config",
     required: true,
     cmd: process.execPath,
     args: [resolve(CLAUDE_DIR, "check-skills.mjs")],
   },
-  { name: "doctor", required: true, cmd: "npx", args: ["expo-doctor"] },
+  {
+    // Both halves of every code-quality tool: the config, and the thing that runs it. A
+    // config that is present and inert enforces nothing while reading like enforcement.
+    name: "toolchain",
+    job: "agent-config",
+    required: true,
+    cmd: process.execPath,
+    args: [resolve(CLAUDE_DIR, "scripts/toolchain-check.mjs")],
+  },
+  { name: "doctor", job: "verify", required: true, cmd: "npx", args: ["expo-doctor"] },
   {
     // Semgrep is Python, the one exception to the npm-only rule. CI runs it regardless.
     name: "semgrep-rules",
+    job: "semgrep",
     required: false,
     needs: "semgrep",
     cmd: process.execPath,
@@ -114,6 +141,7 @@ const STEPS = [
   },
   {
     name: "secrets",
+    job: "secrets",
     required: false,
     needs: "gitleaks",
     cmd: process.execPath,
@@ -124,6 +152,7 @@ const STEPS = [
     // simply be absent locally, and upstream ships no Windows build at all, so this is
     // optional here and .github/workflows/compliance.yml is the enforcing layer.
     name: "compliance",
+    job: "compliance",
     required: false,
     needs: "greenlight",
     cmd: "greenlight",
@@ -132,6 +161,7 @@ const STEPS = [
   {
     // Boots a dev server and a browser, so it is opt-in rather than on every run.
     name: "web-e2e",
+    job: "web-e2e",
     required: false,
     onlyFull: true,
     cmd: "npx",
@@ -185,6 +215,20 @@ const git = (args) => {
   return r.status === 0 ? r.stdout.trim() : null;
 };
 
+const sha = git(["rev-parse", "HEAD"]);
+const porcelain = git(["status", "--porcelain"]);
+
+// The commit plus the state of the working tree, in one digest. `sha` alone is not enough to
+// answer the question guard-pr.mjs asks — "was this run against the code about to be
+// reviewed?" — because the commit does not move when someone edits a file after the run, and
+// editing a file after the run is the case people actually hit.
+const tree =
+  sha === null
+    ? null
+    : createHash("sha1")
+        .update(sha + "\n" + (porcelain ?? ""))
+        .digest("hex");
+
 writeFileSync(
   RECEIPT,
   JSON.stringify(
@@ -193,8 +237,9 @@ writeFileSync(
       ran: new Date().toISOString(),
       verdict, // "green" | "failed" | "incomplete" — never a bare boolean
       branch: git(["rev-parse", "--abbrev-ref", "HEAD"]),
-      sha: git(["rev-parse", "HEAD"]),
-      dirty: !!git(["status", "--porcelain"]),
+      sha,
+      dirty: !!porcelain,
+      tree,
       full,
       steps: results,
     },

@@ -263,22 +263,97 @@ for (const file of files) {
 }
 
 // `shell: true` re-introduces per-OS quoting rules through the back door.
+//
+// Reduced to executable text first, for the same reason the rules above are: a comment
+// explaining why a script no longer passes `shell: true` has to be able to write it down.
+// Flagging the explanation is the false positive that teaches people to ignore the check.
 for (const file of files.filter(
   (f) => /\.mjs$/.test(f) && relative(ROOT, f).includes(".claude"),
 )) {
   const rel = relative(ROOT, file).replace(/\\/g, "/");
   if (rel === ".claude/check-skills.mjs") continue;
-  readFileSync(file, "utf8")
-    .split(/\r?\n/)
-    .forEach((line, i) => {
-      if (!/shell:\s*true/.test(line)) return;
-      // format-after-edit needs it: npx on Windows is a .cmd shim that spawn cannot exec.
-      if (/process\.platform === "win32"/.test(line)) return;
+  const lines = readFileSync(file, "utf8").split(/\r?\n/);
+  const code = executableText(lines, true);
+  lines.forEach((line, i) => {
+    if (!/shell:\s*true/.test(code[i] ?? "")) return;
+    // format-after-edit needs it: npx on Windows is a .cmd shim that spawn cannot exec.
+    if (/process\.platform === "win32"/.test(line)) return;
+    note(
+      file,
+      `line ${i + 1}: 'shell: true' brings per-OS quoting rules back — pass an argument array instead`,
+    );
+  });
+}
+
+// ---------------------------------------------------------------- CI parity
+//
+// ci-local.mjs — what `npm run verify` runs — claims to run what CI runs. That claim decays the
+// moment someone adds a job to a workflow and not to the script: silently, because the script
+// still passes and now proves less than the person running it believes. The preflight-ci skill
+// says to change both; this is what makes that hold when nobody remembers reading it.
+//
+// A new job forces a decision rather than a default: cover it locally, or name it here as
+// something no local run can honestly stand in for.
+{
+  const LOCAL_EXEMPT = new Map([
+    ["codeql", "no practical local runner; needs GitHub Code Security on the repo"],
+    [
+      "zap-web",
+      "weekly, and needs a served build rather than a source tree — see the dast-scan skill",
+    ],
+    [
+      "commits",
+      "enforced locally per commit by the husky commit-msg hook, not per verify run",
+    ],
+    [
+      "artifacts",
+      "needs the pull request to exist — it reads the PR's own diff against base",
+    ],
+    ["test-integrity", "needs a base ref to diff against, which a local run may not have"],
+    [
+      "dependencies",
+      "npm audit and Dependabot read advisory data that changes without the code, so a local pass does not stay true",
+    ],
+  ]);
+
+  const script = join(CLAUDE_DIR, "scripts", "ci-local.mjs");
+  const workflows = join(ROOT, ".github", "workflows");
+
+  if (existsSync(script) && existsSync(workflows)) {
+    // Job ids are the two-space-indented keys under `jobs:`. Regex rather than a YAML parser
+    // on purpose: this file must run with no dependencies installed.
+    const declared = new Map();
+    for (const name of readdirSync(workflows).filter((n) => /\.ya?ml$/.test(n))) {
+      const text = readFileSync(join(workflows, name), "utf8");
+      const body = text.slice(text.search(/^jobs:\s*$/m));
+      for (const m of body.matchAll(/^ {2}([a-z][a-z0-9-]*):\s*$/gm))
+        declared.set(m[1], name);
+    }
+
+    const covered = new Set();
+    const scriptText = readFileSync(script, "utf8");
+    for (const m of scriptText.matchAll(/^\s*job:\s*"([^"]+)"/gm)) {
+      // A check can stand in for more than one job — write it as "a+b".
+      for (const part of m[1].split("+")) covered.add(part.trim());
+    }
+
+    for (const job of covered) {
+      if (!declared.has(job)) {
+        note(
+          script,
+          `claims CI job "${job}", which no workflow defines — renamed or removed?`,
+        );
+      }
+    }
+    for (const [job, file] of declared) {
+      if (covered.has(job) || LOCAL_EXEMPT.has(job)) continue;
       note(
-        file,
-        `line ${i + 1}: 'shell: true' brings per-OS quoting rules back — pass an argument array instead`,
+        join(workflows, file),
+        `job "${job}" has no check in ci-local.mjs — add one, or exempt it in check-skills.mjs ` +
+          `with the reason it cannot run locally`,
       );
-    });
+    }
+  }
 }
 
 if (problems.length) {

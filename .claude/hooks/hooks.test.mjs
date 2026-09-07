@@ -9,6 +9,7 @@
 // Exit 0 = all cases pass. Exit 1 = at least one case failed.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -71,12 +72,10 @@ const CASES = [
     ALLOW,
     "the correct install form",
   ],
-  [
-    "guard-bash.mjs",
-    bash("git push --force-with-lease origin feat"),
-    ALLOW,
-    "lease-guarded push",
-  ],
+  // A lease-guarded push to your own branch is ordinary work, but whether the guard allows it
+  // now depends on the branch the command runs from — it refuses one that force-pushes main
+  // while you are standing on main. So that case lives in the branch-aware section below,
+  // against a fixture repo, rather than reading whichever branch this checkout is on.
   ["guard-bash.mjs", bash("yarn add zod"), ALLOW, "yarn add of a non-Expo package"],
   ["guard-bash.mjs", bash("npm install"), ALLOW, "bare install, restores the tree"],
   ["guard-bash.mjs", bash("npm run lint"), ALLOW, "ordinary script"],
@@ -668,5 +667,362 @@ let stageCases = 0;
   rmSync(TMP, { recursive: true, force: true });
 }
 
-console.log(`\n${CASES.length + 1 + pluginCases + stageCases} cases, ${failed} failed`);
+// --- guard-bash, rewriting main -------------------------------------------
+//
+// Landing on main is one rule; rewriting it is another, and the spellings that matter are the
+// ones people reach for once the obvious one is blocked. ALLOW_PUSH_TO_MAIN is deliberately
+// set for these: seeding main is a reason to append to it and never a reason to rewrite it, so
+// the override must not open this door.
+
+let rewriteCases = 0;
+
+{
+  const REWRITE_CASES = [
+    ["git push --force-with-lease origin main", BLOCK, "force-with-lease onto main"],
+    ["git push origin +main", BLOCK, "a + refspec is a force push in disguise"],
+    ["git push origin +feat:feat", BLOCK, "a + refspec on any branch"],
+    ["git push origin --delete main", BLOCK, "deleting main on the remote"],
+    ["git push origin :main", BLOCK, "the colon spelling of a delete"],
+    ["git branch -f main origin/main", BLOCK, "moving the local main ref"],
+    ["git branch -D main", BLOCK, "deleting the local main ref"],
+    ["git update-ref refs/heads/main HEAD", BLOCK, "moving main by plumbing"],
+
+    // Ordinary work on a branch of your own. `--force-with-lease origin feat` belongs in the
+    // branch-aware section below instead: whether it is allowed depends on the branch the
+    // command runs from, and a case that reads the developer's own branch passes or fails by
+    // where they happen to be standing.
+    ["git push origin feat", ALLOW, "a plain push"],
+    ["git branch -D feat", ALLOW, "deleting your own branch"],
+    ['echo "never git push --force main"', ALLOW, "the rule named inside a string"],
+  ];
+
+  for (const [command, expected, label] of REWRITE_CASES) {
+    const got = run("guard-bash.mjs", bash(command), {
+      ALLOW_PUSH_TO_MAIN: "1",
+    });
+    const ok = got === expected;
+    if (!ok) failed++;
+    rewriteCases++;
+    const want = expected === BLOCK ? "block" : "allow";
+    console.log(
+      `${ok ? "pass" : "FAIL"}  ${"guard-bash.mjs".padEnd(22)} ${want}  ${label}${ok ? "" : `  (got exit ${got})`}`,
+    );
+  }
+}
+
+// --- guard-bash, branch-aware ---------------------------------------------
+//
+// The subtle half of protecting main: these commands name no branch at all. A force push with
+// no refspec pushes whatever you are standing on, and a hard reset destroys it in place.
+// Identical text, opposite consequences, so the fixture is a real repo on a real branch.
+
+let branchCases = 0;
+
+{
+  const TMP = mkdtempSync(join(tmpdir(), "branch-guard-"));
+  const git = (...args) => spawnSync("git", args, { cwd: TMP, encoding: "utf8" });
+
+  git("init", "-b", "main");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "test");
+  writeFileSync(join(TMP, "seed.txt"), "seed\n");
+  git("add", "-A");
+  git("commit", "-m", "chore: seed");
+
+  const runIn = (command) =>
+    spawnSync(process.execPath, [join(HERE, "guard-bash.mjs")], {
+      input: JSON.stringify(bash(command)),
+      encoding: "utf8",
+      cwd: TMP,
+      env: {
+        ...process.env,
+        CLAUDE_SKIP_PLUGIN_CHECK: "",
+        CLAUDE_PROJECT_DIR: "",
+        ALLOW_PUSH_TO_MAIN: "",
+      },
+    }).status;
+
+  const DANGEROUS = [
+    "git reset --hard HEAD~1",
+    "git push --force-with-lease",
+    "git push --force-with-lease origin feat",
+  ];
+
+  for (const command of DANGEROUS) {
+    const got = runIn(command);
+    const ok = got === BLOCK;
+    if (!ok) failed++;
+    branchCases++;
+    console.log(
+      `${ok ? "pass" : "FAIL"}  ${"guard-bash.mjs".padEnd(22)} block  on main: ${command}${ok ? "" : `  (got exit ${got})`}`,
+    );
+  }
+
+  // The same commands on a branch of your own are ordinary work.
+  git("switch", "-c", "feat");
+  for (const command of DANGEROUS) {
+    const got = runIn(command);
+    const ok = got === ALLOW;
+    if (!ok) failed++;
+    branchCases++;
+    console.log(
+      `${ok ? "pass" : "FAIL"}  ${"guard-bash.mjs".padEnd(22)} allow  on a branch: ${command}${ok ? "" : `  (got exit ${got})`}`,
+    );
+  }
+
+  rmSync(TMP, { recursive: true, force: true });
+}
+
+// --- guard-pr -------------------------------------------------------------
+//
+// This guard reads the receipt ci-local.mjs writes, so each case writes its own receipt to a
+// temp path and points the hook at it. That keeps the outcome dependent on the fixture rather
+// than on whether whoever is running the tests happens to have a green run sitting in the
+// repo — the mistake that would make these cases pass on one laptop and fail on another.
+//
+// The last case is the one that made the shared splitter necessary: a document that merely
+// quotes the gated command is not the gated command, and a guard that cannot tell the
+// difference blocks the session that is writing its own tests.
+
+let prCases = 0;
+
+{
+  const TMP = mkdtempSync(join(tmpdir(), "pr-guard-"));
+  const ROOT = join(HERE, "..", "..");
+  let seq = 0;
+
+  const git = (...args) => {
+    const r = spawnSync("git", args, { cwd: ROOT, encoding: "utf8" });
+    return r.status === 0 ? r.stdout.trim() : "";
+  };
+
+  // The digest ci-local.mjs records: this commit plus the state of the working tree.
+  const sha = git("rev-parse", "HEAD");
+  const thisTree = createHash("sha1")
+    .update(`${sha}\n${git("status", "--porcelain")}`)
+    .digest("hex");
+
+  /** Write a receipt and return its path. */
+  function receipt(body) {
+    const path = join(TMP, `receipt-${seq++}.json`);
+    writeFileSync(path, JSON.stringify(body));
+    return path;
+  }
+
+  const step = (name, outcome, required = true) => ({
+    name,
+    outcome,
+    required,
+  });
+
+  const MISSING = join(TMP, "never-written.json");
+  const GREEN = receipt({
+    version: 2,
+    verdict: "green",
+    full: true,
+    sha,
+    tree: thisTree,
+    steps: [step("types", "passed"), step("web-e2e", "passed", false)],
+  });
+  const RED = receipt({
+    version: 2,
+    verdict: "failed",
+    full: true,
+    sha,
+    tree: thisTree,
+    steps: [step("types", "failed"), step("test", "failed")],
+  });
+  const INCOMPLETE = receipt({
+    version: 2,
+    verdict: "incomplete",
+    full: true,
+    sha,
+    tree: thisTree,
+    steps: [
+      {
+        name: "doctor",
+        outcome: "skipped",
+        required: true,
+        why: "not installed",
+      },
+    ],
+  });
+  const STALE = receipt({
+    version: 2,
+    verdict: "green",
+    full: true,
+    sha,
+    tree: "0".repeat(40),
+    dirty: true,
+    steps: [step("types", "passed")],
+  });
+  // Green about less than CI checks: ci.yml runs the web E2E suite on every pull request, and
+  // a run without --full skipped it.
+  const PARTIAL = receipt({
+    version: 2,
+    verdict: "green",
+    full: false,
+    sha,
+    tree: thisTree,
+    steps: [
+      {
+        name: "web-e2e",
+        outcome: "skipped",
+        required: false,
+        why: "needs --full",
+      },
+    ],
+  });
+  // A receipt written before the verdict field existed. Absent is not false — refusing every
+  // one of them would block on a field nobody knew to write.
+  const LEGACY = receipt({
+    version: 1,
+    green: true,
+    full: true,
+    sha,
+    tree: thisTree,
+  });
+
+  const PR_CASES = [
+    // Gated: these are the actions that put a change in front of a reviewer.
+    ["gh pr create --fill", MISSING, BLOCK, "open a PR with the gate never run"],
+    ["gh pr create --fill", RED, BLOCK, "open a PR after a failed run"],
+    ["gh pr create --fill", INCOMPLETE, BLOCK, "a required check could not run"],
+    [
+      "gh pr create --fill",
+      STALE,
+      BLOCK,
+      "open a PR when the green run was against other code",
+    ],
+    ["gh pr create --fill", PARTIAL, BLOCK, "a run without --full skipped what CI runs"],
+    ["gh pr ready 1", MISSING, BLOCK, "mark ready for review"],
+    ["gh pr merge 1 --squash", MISSING, BLOCK, "merge"],
+    ["npm run lint && gh pr create --fill", MISSING, BLOCK, "second segment of a chain"],
+
+    // Allowed.
+    ["gh pr create --fill", GREEN, ALLOW, "green run against exactly this code"],
+    ["gh pr create --fill", LEGACY, ALLOW, "a receipt written before `verdict` existed"],
+    [
+      "gh pr create --draft --fill",
+      MISSING,
+      ALLOW,
+      "a draft shares work without asking for review",
+    ],
+    ["gh pr view 1", MISSING, ALLOW, "reading a PR"],
+    ["gh pr checks 1 --watch", MISSING, ALLOW, "watching checks"],
+    ["gh pr list", MISSING, ALLOW, "listing PRs"],
+    ["git push -u origin feat", MISSING, ALLOW, "pushing a branch is not opening a PR"],
+    ['echo "lint, then gh pr create"', MISSING, ALLOW, "mention inside a quoted string"],
+    [
+      "cat <<EOF\nnpm run lint && gh pr create --fill\nEOF",
+      MISSING,
+      ALLOW,
+      "a quoted chain in a document, not a command",
+    ],
+  ];
+
+  for (const [command, path, expected, label] of PR_CASES) {
+    const got = run("guard-pr.mjs", bash(command), { CLAUDE_CI_RECEIPT: path });
+    const ok = got === expected;
+    if (!ok) failed++;
+    prCases++;
+    const want = expected === BLOCK ? "block" : "allow";
+    console.log(
+      `${ok ? "pass" : "FAIL"}  ${"guard-pr.mjs".padEnd(22)} ${want}  ${label}${ok ? "" : `  (got exit ${got})`}`,
+    );
+  }
+
+  // The escape hatch has to work, or a broken gate becomes a broken team.
+  {
+    const got = run("guard-pr.mjs", bash("gh pr create --fill"), {
+      CLAUDE_CI_RECEIPT: MISSING,
+      CLAUDE_SKIP_CI_PREFLIGHT: "1",
+    });
+    const ok = got === ALLOW;
+    if (!ok) failed++;
+    prCases++;
+    console.log(
+      `${ok ? "pass" : "FAIL"}  ${"guard-pr.mjs".padEnd(22)} allow  CLAUDE_SKIP_CI_PREFLIGHT overrides a block${ok ? "" : `  (got exit ${got})`}`,
+    );
+  }
+
+  // Malformed input must never wedge a session.
+  {
+    const got = run("guard-pr.mjs", {}, { CLAUDE_CI_RECEIPT: MISSING });
+    const ok = got === ALLOW;
+    if (!ok) failed++;
+    prCases++;
+    console.log(
+      `${ok ? "pass" : "FAIL"}  ${"guard-pr.mjs".padEnd(22)} allow  no command field${ok ? "" : `  (got exit ${got})`}`,
+    );
+  }
+
+  rmSync(TMP, { recursive: true, force: true });
+}
+
+// --- guard-push -----------------------------------------------------------
+//
+// A git hook rather than a Claude Code hook, so it refuses by git's convention (exit 1) and is
+// exercised the way git calls it: one line per ref on stdin, and a real repo to resolve the
+// shas against. Two real commits are cheaper here than any amount of mocking, and they make
+// the fast-forward case — the one that must keep working — genuinely true rather than asserted.
+
+let pushCases = 0;
+
+{
+  const TMP = mkdtempSync(join(tmpdir(), "push-guard-"));
+  const git = (...args) => spawnSync("git", args, { cwd: TMP, encoding: "utf8" });
+  const ZERO = "0".repeat(40);
+  const REFUSE = 1;
+
+  git("init", "-b", "main");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "test");
+  writeFileSync(join(TMP, "a.txt"), "a\n");
+  git("add", "-A");
+  git("commit", "-m", "chore: first");
+  const first = git("rev-parse", "HEAD").stdout.trim();
+  writeFileSync(join(TMP, "b.txt"), "b\n");
+  git("add", "-A");
+  git("commit", "-m", "chore: second");
+  const second = git("rev-parse", "HEAD").stdout.trim();
+
+  /** One pre-push line: local ref, local sha, remote ref, remote sha. */
+  const push = (localSha, remoteRef, remoteSha) =>
+    spawnSync(process.execPath, [join(HERE, "guard-push.mjs")], {
+      input: `refs/heads/x ${localSha} ${remoteRef} ${remoteSha}\n`,
+      encoding: "utf8",
+      cwd: TMP,
+    }).status;
+
+  const PUSH_CASES = [
+    // Adding commits on top of what the remote has is the whole point.
+    [push(second, "refs/heads/main", first), ALLOW, "fast-forward onto main"],
+    // The remote is ahead: this push drops a commit someone else can already see.
+    [push(first, "refs/heads/main", second), REFUSE, "force-push onto main"],
+    [push(ZERO, "refs/heads/main", second), REFUSE, "deleting main"],
+    [push(second, "refs/heads/master", first), ALLOW, "fast-forward onto master"],
+    [push(first, "refs/heads/master", second), REFUSE, "force-push onto master"],
+    // Your own branch is yours to rewrite.
+    [push(first, "refs/heads/feat", second), ALLOW, "force-push onto a feature branch"],
+    // Nothing on the remote to overwrite yet.
+    [push(second, "refs/heads/main", ZERO), ALLOW, "creating main on a fresh remote"],
+  ];
+
+  for (const [got, expected, label] of PUSH_CASES) {
+    const ok = got === expected;
+    if (!ok) failed++;
+    pushCases++;
+    const want = expected === ALLOW ? "allow" : "refuse";
+    console.log(
+      `${ok ? "pass" : "FAIL"}  ${"guard-push.mjs".padEnd(22)} ${want}  ${label}${ok ? "" : `  (got exit ${got})`}`,
+    );
+  }
+
+  rmSync(TMP, { recursive: true, force: true });
+}
+
+console.log(
+  `\n${CASES.length + 1 + pluginCases + stageCases + rewriteCases + branchCases + prCases + pushCases} cases, ${failed} failed`,
+);
 process.exit(failed === 0 ? 0 : 1);

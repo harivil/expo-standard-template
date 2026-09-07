@@ -139,8 +139,14 @@ it added is covered by a flow.
 ## 5 · Verify
 
 Follow the **`verify-app`** skill: the repo's own checks, then the app running on every surface the
-spec claims, in light and dark. Capture the _after_ on the same surfaces and journeys as the
-baseline:
+spec claims, in light and dark. Run the checks CI will run _here_, not on the pull request — the
+**`preflight-ci`** skill covers what maps to what, and what a local run cannot cover:
+
+```bash
+npm run verify -- --full
+```
+
+Capture the _after_ on the same surfaces and journeys as the baseline:
 
 ```bash
 node .claude/scripts/capture.mjs after <slug> --surfaces ios,android,web --record
@@ -151,8 +157,10 @@ Then dispatch the **`verifier`** agent. It works from the spec and the running a
 cannot fix anything, deliberately, so its verdict is not coloured by the assumptions that produced
 the code.
 
-**Gate:** every check green with its output read, every acceptance criterion from stage 2 observed to
-hold, and `verifier` reporting no behaviour that contradicts the plan.
+**Gate:** every check green with its output read — including `npm run verify -- --full`, which is
+what makes the pull request green on the first push rather than the fourth — every acceptance
+criterion from stage 2 observed to hold, and `verifier` reporting no behaviour that contradicts the
+plan.
 
 ---
 
@@ -191,13 +199,25 @@ both in-session and by `.husky/pre-push`, and by branch protection on the server
 version of "just push it" that works. If a push is refused, that is the guard doing its job: open
 the PR.
 
+The **`open-pr`** skill does the whole of it in one command — captures the surfaces this machine
+can reach, uploads them, and opens the PR with its evidence table already rendering the images:
+
+```bash
+node .claude/skills/open-pr/scripts/open-pr.mjs <slug> --capture --what "one sentence"
+```
+
+By hand instead, and then drag the captures in:
+
 ```bash
 git push -u origin <slug>
 ```
 
 **Gate:** CI green, evidence attached, a code owner approved.
 [`CODEOWNERS`](../../../.github/CODEOWNERS) is what makes that last one enforceable rather
-than hoped for.
+than hoped for. `guard-pr.mjs` holds the first one before CI ever runs: a pull request opens for
+review only once `npm run verify -- --full` has passed **against the code being reviewed**, so a
+green run from before your last edit does not count. A draft is never blocked — sharing unfinished
+work is not what the gate is for.
 
 Getting the merged change onto a device is its own procedure — versions first with
 [`versioning`](../versioning/SKILL.md), then build and submit with

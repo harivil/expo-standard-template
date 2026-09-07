@@ -1,12 +1,22 @@
-# Nothing lands on main except by merging a reviewed pull request.
+# Nothing lands on main except by merging a reviewed pull request, and nothing rewrites it.
 #
-# The same rule is enforced for Claude Code sessions by .claude/hooks/guard-bash.mjs, which
-# catches it before the command runs and can explain itself. This one is git's own hook, so
-# it also covers Codex, a plain terminal, and a human — the way commit-msg and pre-commit do.
-# Both call one definition, so a session and a bare `git push` cannot disagree.
+# Two definitions, both shared with a Claude Code hook so a session and a bare `git push`
+# cannot disagree:
 #
-# Client-side, therefore bypassable with --no-verify. GitHub branch protection is the layer
-# that is not; this is the fast one in front of it.
+#   check-push-target.mjs   refuses any push that LANDS on main — also called by guard-bash
+#   guard-push.mjs          refuses a force-push or delete OF main — the narrower rule that
+#                           still bites under ALLOW_PUSH_TO_MAIN=1, because seeding main is a
+#                           reason to append to it and never a reason to rewrite it
 #
-# Deliberate override: ALLOW_PUSH_TO_MAIN=1 git push ...
-node .claude/scripts/check-push-target.mjs --pre-push
+# git hands a pre-push hook one line per ref on stdin, and each script reads it, so the refs
+# are captured once here and replayed to both.
+#
+# Client-side, therefore bypassable with --no-verify, and only present in clones where
+# `npm install` has run. GitHub branch protection is the layer that is not; this is the fast
+# one in front of it.
+#
+# Deliberate override for landing on main: ALLOW_PUSH_TO_MAIN=1 git push ...
+refs=$(cat)
+
+printf '%s\n' "$refs" | node .claude/scripts/check-push-target.mjs --pre-push || exit 1
+printf '%s\n' "$refs" | node .claude/hooks/guard-push.mjs || exit 1

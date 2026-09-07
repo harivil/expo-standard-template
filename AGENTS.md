@@ -15,8 +15,17 @@ npm run verify
 ```
 
 `verify` runs what CI runs — format, types, lint, tests, expo-doctor, the version gate, the hook and
-skill tests, and the Semgrep rule fixtures. Add `-- --full` to include the web E2E suite. It reports
-**green**, **failed**, or **incomplete**, and never green when a required check could not run.
+skill tests, and the Semgrep rule fixtures. Add `-- --full` to include the web E2E suite, which is
+what CI runs on every pull request. It reports **green**, **failed**, or **incomplete**, and never
+green when a required check could not run.
+
+That claim — "it runs what CI runs" — is **checked, not trusted**. Every step in `ci-local.mjs`
+names the workflow job it stands in for, and `check-skills.mjs` fails when a workflow declares a job
+no step covers and no exemption explains. Adding a job to CI is therefore a decision: cover it
+locally, or write down why no local run can honestly stand in for it. Without that, the script keeps
+passing while proving less than the person running it believes.
+[`preflight-ci`](.claude/skills/preflight-ci/SKILL.md) is the procedure; a green run is also what
+[`guard-pr`](.claude/hooks/guard-pr.mjs) requires before a pull request can open.
 
 ## Any change starts here
 
@@ -144,20 +153,23 @@ PR.
 
 This repo's own skills, which carry what is specific to **this** app rather than to Expo:
 
-| Skill              | Owns                                                            |
-| ------------------ | --------------------------------------------------------------- |
-| `feature-loop`     | the whole loop; read it before the first file                   |
-| `design-system`    | tokens, states, component variants, contrast, native convention |
-| `scaffold-feature` | where a file goes and how it is written here                    |
-| `verify-app`       | proving a change works on all three surfaces, light and dark    |
-| `write-e2e`        | Maestro and Playwright flows, and selector discipline           |
-| `capture-evidence` | before/after screenshots for the PR                             |
-| `versioning`       | the four version numbers and which one you may touch            |
-| `release-app`      | EAS build, submit, TestFlight, the stores, OTA and rollback     |
-| `security-scan`    | the five static layers and how to triage a finding              |
-| `dast-scan`        | what the running app actually sends over the network            |
-| `greenlight`       | App Store and Play compliance, and what GREENLIT does not mean  |
-| `manage-context`   | keeping a long session working, and handing one over            |
+| Skill                 | Owns                                                                         |
+| --------------------- | ---------------------------------------------------------------------------- |
+| `feature-loop`        | the whole loop; read it before the first file                                |
+| `design-system`       | tokens, states, component variants, contrast, native convention              |
+| `scaffold-feature`    | where a file goes and how it is written here                                 |
+| `verify-app`          | proving a change works on all three surfaces, light and dark                 |
+| `write-e2e`           | Maestro and Playwright flows, and selector discipline                        |
+| `capture-evidence`    | before/after screenshots for the PR                                          |
+| `open-pr`             | raising the PR with those screenshots rendered in its body                   |
+| `preflight-ci`        | running what CI runs before pushing, and triaging a red check                |
+| `toolchain-standards` | Prettier, ESLint, husky, commitlint, lint-staged — config _and_ what runs it |
+| `versioning`          | the four version numbers and which one you may touch                         |
+| `release-app`         | EAS build, submit, TestFlight, the stores, OTA and rollback                  |
+| `security-scan`       | the five static layers and how to triage a finding                           |
+| `dast-scan`           | what the running app actually sends over the network                         |
+| `greenlight`          | App Store and Play compliance, and what GREENLIT does not mean               |
+| `manage-context`      | keeping a long session working, and handing one over                         |
 
 The `references/` files under the scaffold skill cover the same ground independently, so a teammate
 who has not run any of the above still gets a working procedure.
@@ -363,9 +375,35 @@ node .claude/scripts/capture.mjs before <slug> --surfaces ios,android,web --reco
 [`capture-evidence`](.claude/skills/capture-evidence/SKILL.md) skill owns the detail. Captures land in
 `.evidence/`, which is gitignored — they attach to the PR rather than bloating the repo.
 
-Windows machines cannot capture iOS; there is no iOS simulator for Windows. The script reports that
-as a typed gap rather than failing, and the PR names who covers it. An unverified surface that is
-written down gets picked up; one that is merely implied ships broken.
+**Getting them into the PR is one command**, and it is not a drag-and-drop:
+
+```bash
+node .claude/skills/open-pr/scripts/open-pr.mjs <slug> --capture --what "one sentence"
+```
+
+[`open-pr`](.claude/skills/open-pr/SKILL.md) captures, uploads, pushes the branch and opens the PR
+with its evidence table already rendering the images. Two things about it are worth knowing before
+you need them. It needs **no browser and no login** — GitHub has no documented API for attaching an
+image, so the prior art all drives a real browser, and this uses the undocumented endpoint the web
+UI itself posts to, with the token `gh` already holds; when that answers anything but 2xx it says so
+and writes the local paths for a human to drag in, rather than leaving a body of images that
+silently do not load. And it asks the **same review-gate question** `guard-pr` asks, through the
+same definition, because it calls `gh` from inside node where no hook can see it.
+
+Web is captured **light and dark**, with nothing needing to be running.
+[`shoot-web.mjs`](.claude/scripts/shoot-web.mjs) exports the app and serves the export through
+[`web-export.mjs`](.claude/scripts/web-export.mjs) — the same definition the web E2E suite's server
+uses, so a screenshot and a test cannot disagree about what they were looking at. It re-exports
+every run, because a cached export is a screenshot of code you are not reviewing.
+
+Windows machines cannot capture iOS; there is no iOS simulator for Windows. Surfaces therefore
+default to **what the machine can do** — `ios,android,web` on macOS, `web,android` on Windows — and
+the missing one is reported as a typed gap rather than a failure, with the PR naming who covers it.
+An unverified surface that is written down gets picked up; one that is merely implied ships broken.
+The same is true of **anything behind the login guard**: an unaided capture reaches `/login` and no
+further, so a change inside `(tabs)` is not in those screenshots, and the body says so. Reaching
+past the guard would put test credentials on every machine that raises a PR, which in a health app
+is a security decision rather than a convenience — it is deliberately not done.
 
 ## Managing a long session
 
@@ -379,22 +417,39 @@ fresh window, without the conversation.
 Most of this file is advisory. These are not — hooks in `.claude/settings.json` block them
 deterministically, on every session, for everyone:
 
-| Blocked                                                                                                       | Do this instead                                                           |
-| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `npm install` of an Expo or React Native package                                                              | `npx expo install <pkg>` — matches the SDK                                |
-| `git push --force`                                                                                            | `--force-with-lease`, which refuses when someone else has pushed          |
-| `git commit` while on `main`                                                                                  | branch, or `git worktree add ../work-<slug> -b <slug>`                    |
-| **Any push landing on `main` or `master`** — including `origin HEAD:main` from a feature branch               | push your branch, open a PR, merge it                                     |
-| Writing to `node_modules/`, `.expo/`, `android/`, `ios/`, `dist/`, `build/`, `coverage/`, `package-lock.json` | change the source or config that generates them                           |
-| **The same write performed by the shell** — `sed -i`, `>`, `>>`, `tee`, `cp`/`mv` destination, `dd of=`       | same: change the source, or regenerate with the tool that owns the file   |
-| **Starting a session at all**, when a plugin this repo declares is not installed for this directory           | `node .claude/scripts/setup.mjs`, then run the install commands it prints |
-| **Submitting a production build** whose `.ipa` or `.aab` has a CRITICAL or HIGH compliance finding            | fix the finding — the gate sits between build and submit                  |
+| Blocked                                                                                                                                                                                                                      | Do this instead                                                               |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `npm install` of an Expo or React Native package                                                                                                                                                                             | `npx expo install <pkg>` — matches the SDK                                    |
+| `git push --force`                                                                                                                                                                                                           | `--force-with-lease`, which refuses when someone else has pushed              |
+| **Rewriting `main` by any spelling** — `--force-with-lease origin main`, `+main`, `--delete main`, `:main`, `git branch -f/-D main`, `git update-ref refs/heads/main`, or a force push / `reset --hard` while standing on it | land work by merging a PR; undo with `git revert <sha>`                       |
+| `git commit` while on `main`                                                                                                                                                                                                 | branch, or `git worktree add ../work-<slug> -b <slug>`                        |
+| **Any push landing on `main` or `master`** — including `origin HEAD:main` from a feature branch                                                                                                                              | push your branch, open a PR, merge it                                         |
+| **Opening, readying or merging a pull request** before `npm run verify -- --full` has passed against the code being reviewed                                                                                                 | run the gate and fix what it reports; `gh pr create --draft` is never blocked |
+| Writing to `node_modules/`, `.expo/`, `android/`, `ios/`, `dist/`, `build/`, `coverage/`, `package-lock.json`                                                                                                                | change the source or config that generates them                               |
+| **The same write performed by the shell** — `sed -i`, `>`, `>>`, `tee`, `cp`/`mv` destination, `dd of=`                                                                                                                      | same: change the source, or regenerate with the tool that owns the file       |
+| **Starting a session at all**, when a plugin this repo declares is not installed for this directory                                                                                                                          | `node .claude/scripts/setup.mjs`, then run the install commands it prints     |
+| **Submitting a production build** whose `.ipa` or `.aab` has a CRITICAL or HIGH compliance finding                                                                                                                           | fix the finding — the gate sits between build and submit                      |
 
 Edited files are formatted automatically after each write, so style drift never reaches a diff.
 
-The last two rows are **one path list, read by two guards** —
+The pull-request row is [`guard-pr`](.claude/hooks/guard-pr.mjs), and what it reads is the receipt
+`npm run verify` writes to `.claude/.ci-local.json`. Four things make that receipt fail the gate,
+and the fourth is the one people actually hit: **it was run against different code.** The receipt
+records the commit _plus_ the state of the working tree, so editing a file after a green run makes
+the receipt stale rather than reusable. A draft PR is deliberately allowed — sharing unfinished work
+is not the failure this guards against. `CLAUDE_SKIP_CI_PREFLIGHT=1` exists for a broken gate;
+reaching for it routinely means the gate is wrong, so fix the gate.
+[`preflight-ci`](.claude/skills/preflight-ci/SKILL.md) owns what maps to what.
+
+The two path rows are **one path list, read by two guards** —
 [`protected-paths.mjs`](.claude/scripts/protected-paths.mjs), the same arrangement as
-`check-push-target.mjs`. It is worth knowing why the shell row exists, because it is the shape
+`check-push-target.mjs` and [`shell-segments.mjs`](.claude/scripts/shell-segments.mjs), which is
+the single answer to "where does one shell command end and the next begin", shared by `guard-bash`
+and `guard-pr`. That one is worth a sentence, because a second copy of it is a second set of false
+positives: it is quote-aware and it drops heredoc bodies, so `sed -i 's|a|b|' <path>` stays one
+command and a file being written with `cat > x <<EOF` may contain any command text at all —
+including the ones these guards block. A guard that cannot tell a document from a command blocks
+the session that is writing its own tests, which is exactly how that module came to exist. It is worth knowing why the shell row exists, because it is the shape
 of mistake to look for elsewhere: `guard-write` only ever sees the `file_path` of an `Edit` or
 `Write` call, so for as long as it was the only path guard, `sed -i 's/x/y/' android/build.gradle`
 was completely unguarded. A guard that covers one tool covers one tool. What it **cannot** see is
@@ -407,14 +462,15 @@ and lets the write through. A block would be wrong: a hotfix, a bump and a spike
 legitimate writes with no spec, and a guard that fires on them gets disabled within a week — which
 is worse than no guard, because everyone keeps believing it is on.
 
-Three more are enforced by **git hooks** rather than Claude Code hooks, which is what makes them
+Four more are enforced by **git hooks** rather than Claude Code hooks, which is what makes them
 apply to Codex, to a plain `git commit`, and to a human:
 
-| Blocked                                            | Where                                 |
-| -------------------------------------------------- | ------------------------------------- |
-| A commit message that is not a Conventional Commit | `.husky/commit-msg` → commitlint      |
-| A commit whose staged diff contains a secret       | `.husky/pre-commit` → gitleaks        |
-| A push that lands on `main` or `master`            | `.husky/pre-push` → check-push-target |
+| Blocked                                                   | Where                                 |
+| --------------------------------------------------------- | ------------------------------------- |
+| A commit message that is not a Conventional Commit        | `.husky/commit-msg` → commitlint      |
+| A commit whose staged diff contains a secret              | `.husky/pre-commit` → gitleaks        |
+| A push that lands on `main` or `master`                   | `.husky/pre-push` → check-push-target |
+| A push that **force-pushes or deletes** `main` / `master` | `.husky/pre-push` → guard-push        |
 
 Two of those have **one definition each, shared with the Claude Code hook** — the pattern to copy
 when adding a guard. `.claude/scripts/scan-staged.mjs` is called by both `.husky/pre-commit` and
@@ -422,6 +478,22 @@ when adding a guard. `.claude/scripts/scan-staged.mjs` is called by both `.husky
 `guard-bash`. A session and a bare `git` command therefore cannot disagree about what counts. The
 secret scan skips silently when gitleaks is not installed locally, because it is a Go binary rather
 than an npm dependency; CI scans every push regardless.
+
+The last two rows are two rules, not one, and the split is deliberate:
+[`guard-push`](.claude/hooks/guard-push.mjs) refuses a force-push or delete **of** `main` and
+**still bites under `ALLOW_PUSH_TO_MAIN=1`**, because seeding or repairing `main` is a reason to
+append to it and never a reason to rewrite it. It reads git's own pre-push stdin — one line per ref
+— and asks whether the remote's commit is still an ancestor of yours, so a push that would drop
+someone else's commit is refused on the facts rather than on the flags it was spelled with. Where
+its answer is unclear — a shallow clone with the object missing — it allows the push: a guard that
+blocks on its own confusion is a guard people uninstall.
+
+`.husky/pre-commit` also runs **lint-staged**, on the staged files only. A hook that lints the whole
+repo is slow enough that people reach for `--no-verify`, and a hook people bypass enforces nothing.
+[`toolchain-standards`](.claude/skills/toolchain-standards/SKILL.md) is what keeps that honest, and
+the failure it exists to stop is not a missing config but **a config that is present and inert** —
+`node .claude/scripts/toolchain-check.mjs` counts a tool as present only when both its config _and_
+the thing that runs it exist.
 
 **Why the push rule needs both layers.** The commit guard checks the branch you are standing on,
 which says nothing about where a push lands — `git push origin HEAD:main` from a feature branch was

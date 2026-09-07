@@ -2,6 +2,16 @@ name: CI
 
 on:
   pull_request:
+    # `edited` is NOT in the default set (opened, synchronize, reopened), and the `artifacts`
+    # job below reads the PR body — so without it, a body that cites the wrong artifact path
+    # stays red until someone pushes a commit, whether or not the body has since been fixed.
+    # A red check that cannot be cleared by fixing the actual problem is the kind everyone
+    # learns to scroll past, and it takes the real findings with it.
+    #
+    # The cost is that a body edit re-runs the whole workflow, not only the body-dependent
+    # job. That is a few runner minutes against a gate that can be cleared honestly, and the
+    # concurrency group above cancels the previous run rather than stacking them.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -130,8 +140,15 @@ jobs:
 
       # Also sweeps for OS-specific files and syntax. The team is split across Windows and
       # macOS, so a shell script that works for its author breaks silently for half of them.
+      # It additionally holds ci-local.mjs to the jobs declared here, so "verify runs what CI
+      # runs" stays true rather than becoming something people used to believe.
       - name: Skills well formed, nothing OS-specific
         run: node .claude/check-skills.mjs
+
+      # A config that is present and inert enforces nothing while looking like enforcement.
+      # This checks both halves of every tool — the config, and the thing that runs it.
+      - name: Toolchain configured and actually wired up
+        run: node .claude/scripts/toolchain-check.mjs
 
   # Turns the PR template's Artifacts section from a prompt into a gate: a PR that changes
   # app code must cite an intent, spec or plan that actually exists in the repo. Nothing

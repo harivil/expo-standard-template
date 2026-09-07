@@ -1,3 +1,7 @@
+# Style, on the staged files only. A hook that lints the whole repo is slow enough that people
+# reach for --no-verify, and a hook people bypass enforces nothing.
+npx lint-staged
+
 # Secrets, before they reach history. Deleting the line later does not remove it — the only
 # real fix is rotating the credential, so the commit is the last cheap moment to catch it.
 # Skipped silently when gitleaks is not installed; CI scans every push regardless.

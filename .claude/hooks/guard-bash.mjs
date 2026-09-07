@@ -33,47 +33,25 @@ try {
 // quoted argument, an echo, or a comment, which is a false positive that teaches people
 // to work around the hook rather than with it.
 //
-// Quote-aware, because a plain `.split(/[;|]/)` cuts a command in half at a separator that
-// the shell would never treat as one. `sed -i 's|a|b|' android/build.gradle` is one command
-// with two pipes inside a quoted argument; splitting on them produced four fragments, none
-// of which still had a verb next to its filename — so the write guard below saw nothing to
-// check. A separator inside quotes is data, not a separator.
-function segments(c) {
-  const out = [];
-  let current = "";
-  let quote = null;
-
-  for (let i = 0; i < c.length; i++) {
-    const ch = c[i];
-
-    if (quote) {
-      if (ch === quote) quote = null;
-      current += ch;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-    // && and || are two characters; ;, | and a newline are one.
-    if ((ch === "&" && c[i + 1] === "&") || (ch === "|" && c[i + 1] === "|")) {
-      out.push(current);
-      current = "";
-      i++;
-      continue;
-    }
-    if (ch === ";" || ch === "|" || ch === "\n") {
-      out.push(current);
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  out.push(current);
-
-  return out.map((s) => s.trim()).filter(Boolean);
+// The splitter itself lives in .claude/scripts/shell-segments.mjs, because guard-pr.mjs reads
+// commands the same way and a second implementation is a second set of false positives. Same
+// defensive import, same reason.
+let split = null;
+try {
+  split = (await import("../scripts/shell-segments.mjs")).segments;
+} catch {
+  split = (c) =>
+    c
+      .split(/(?:&&|\|\||[;|\n])/)
+      .map((s) => s.trim())
+      .filter(Boolean);
 }
+const segments = split;
+
+// Names the protected branch anywhere in a command — as a branch, a refspec, or either side
+// of a colon. Deliberately broad: this only ever narrows *which rule* fires, never whether an
+// unrelated command is allowed, because every rule using it also requires a git verb.
+const PROTECTED_NAME = /(^|[\s:+/])(main|master)($|[\s:^~])/;
 
 const BLOCKS = [
   {
@@ -105,6 +83,63 @@ const BLOCKS = [
     why: () =>
       `Use --force-with-lease instead of --force. It refuses the push when someone else has\n` +
       `committed since you last fetched, rather than discarding their work.`,
+  },
+  {
+    // main is append-only. --force-with-lease is the right tool on your own branch and the
+    // wrong one here: it still rewrites published history, and the people it breaks are not
+    // the person who ran the command. Every spelling is covered, because the interesting ones
+    // are the spellings people reach for once the obvious one is blocked.
+    test: (segs) =>
+      segs.some((s) => {
+        if (!/^(sudo\s+)?git\s+push\b/.test(s)) return false;
+        if (!PROTECTED_NAME.test(s)) return false;
+        return (
+          /--force(-with-lease|-if-includes)?\b/.test(s) ||
+          /(\s|^)-f(\s|$)/.test(s) ||
+          /\s\+\S*(main|master)\b/.test(s) // +main — a force push wearing a refspec
+        );
+      }),
+    why: () =>
+      `main is append-only. Rewriting it breaks every clone that already has it.\n` +
+      `  Land work by merging a reviewed pull request. To undo something already on main:\n` +
+      `    git revert <sha>            # a new commit that undoes it, history intact`,
+  },
+  {
+    // A leading + in a refspec is --force with better camouflage, on any branch.
+    test: (segs) =>
+      segs.some(
+        (s) => /^(sudo\s+)?git\s+push\b/.test(s) && /\s\+[^\s:+][^\s:]*(:|\s|$)/.test(s),
+      ),
+    why: () =>
+      `A '+' in front of a refspec is a force push. If you meant it, say so with\n` +
+      `--force-with-lease, which refuses when someone else has pushed since your last fetch.`,
+  },
+  {
+    // Deleting the branch is the most complete rewrite there is.
+    test: (segs) =>
+      segs.some(
+        (s) =>
+          /^(sudo\s+)?git\s+push\b/.test(s) &&
+          PROTECTED_NAME.test(s) &&
+          (/--delete\b|(\s|^)-d(\s|$)/.test(s) ||
+            /\s:(refs\/heads\/)?(main|master)\b/.test(s)),
+      ),
+    why: () => `That deletes main on the remote. Nothing in this repo's flow needs that.`,
+  },
+  {
+    // Moving the local ref is how a rewrite gets staged before it is pushed.
+    test: (segs) =>
+      segs.some(
+        (s) =>
+          (/^(sudo\s+)?git\s+branch\b/.test(s) &&
+            /(\s|^)(-f|-D|-M|--force|--delete|--move)(\s|$)/.test(s) &&
+            PROTECTED_NAME.test(s)) ||
+          (/^(sudo\s+)?git\s+update-ref\b/.test(s) &&
+            /refs\/heads\/(main|master)\b/.test(s)),
+      ),
+    why: () =>
+      `That moves or deletes the local main ref, which is the first half of rewriting it.\n` +
+      `  Work on a branch: git switch -c <slug>`,
   },
 ];
 
@@ -178,6 +213,42 @@ function main(raw) {
       );
       return 2;
     }
+  }
+
+  // The rules above read the command. These read the repo, because the same command is fine
+  // on a feature branch and destructive on main — `git push --force-with-lease` with no
+  // refspec pushes whatever you are standing on.
+  const onProtected = () => {
+    const b = currentBranch();
+    return b === "main" || b === "master";
+  };
+
+  if (
+    segs.some(
+      (s) =>
+        /^(sudo\s+)?git\s+push\b/.test(s) &&
+        /--force(-with-lease|-if-includes)?\b|(\s|^)-f(\s|$)/.test(s),
+    ) &&
+    onProtected()
+  ) {
+    process.stderr.write(
+      `You are on main, and that force-pushes the branch you are standing on.\n` +
+        `  main is append-only — land work through a reviewed pull request, and undo with\n` +
+        `  git revert <sha> rather than by rewriting what others have already pulled.\n`,
+    );
+    return 2;
+  }
+
+  if (
+    segs.some((s) => /^(sudo\s+)?git\s+reset\b/.test(s) && /--hard\b/.test(s)) &&
+    onProtected()
+  ) {
+    process.stderr.write(
+      `A hard reset on main discards commits from the branch everyone else builds on.\n` +
+        `  If you need main's exact state:   git switch -c <slug> && git reset --hard origin/main\n` +
+        `  If you need to undo a commit:     git revert <sha>\n`,
+    );
+    return 2;
   }
 
   return 0;
