@@ -1,0 +1,10 @@
+{
+  "_comment": "Fixture. Not the app's real config — Expo reads only the app.json at the repo root, never this one.",
+  "_semgrep_ruleid": ["android-cleartext-traffic-enabled"],
+  "expo": {
+    "name": "fixture",
+    "android": {
+      "usesCleartextTraffic": true
+    }
+  }
+}

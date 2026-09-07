@@ -1,0 +1,163 @@
+# Semgrep rules for this app.
+#
+# These sit ON TOP of the registry packs (p/typescript, p/react, p/secrets, p/owasp-top-ten)
+# that .github/workflows/security.yml runs. Those cover generic JavaScript and React; these
+# cover what is specific to an Expo app handling health data, which no off-the-shelf pack knows.
+#
+# Run locally:  npx semgrep --config .semgrep.yml --config p/typescript --config p/secrets .
+# One rule:     npx semgrep --config .semgrep.yml --include '*.tsx' .
+#
+# Adding a rule: every one here should have cost someone real time, or protect data that would
+# be expensive to leak. A rule that fires on style is a rule people learn to ignore.
+
+rules:
+  # ---------------------------------------------------------------- data leakage
+
+  - id: no-personal-data-in-logs
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Personal or health data must not reach logs. Logs are shipped to crash reporters and
+      analytics, retained far longer than the session, and readable by anyone with dashboard
+      access. Log an opaque id instead of the record, or remove the statement.
+    patterns:
+      - pattern: console.$M(...)
+      - pattern-regex: (?i).*(patient|health|diagnos|medication|prescription|symptom|dob|dateOfBirth|birthDate|ssn|socialSecurity|insurance|memberId|email|phoneNumber|address|firstName|lastName|fullName).*
+
+  - id: no-personal-data-in-url
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Identifying data must not travel in a URL. Query strings are logged by proxies, servers
+      and analytics, and survive in browser history. Send it in a request body over HTTPS.
+    patterns:
+      - pattern-either:
+          - pattern: fetch("$URL", ...)
+          - pattern: fetch(`$URL`, ...)
+          - pattern: axios.$M("$URL", ...)
+      - metavariable-regex:
+          metavariable: $URL
+          regex: (?i).*[?&](email|ssn|dob|patient|token|password|phone|memberId)=.*
+
+  - id: error-message-leaks-response-body
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      Rendering a raw response body into an error message can put server-side data — including
+      records belonging to other users — on screen. Show a message you wrote; log the detail.
+    pattern-either:
+      - pattern: |
+          Alert.alert(..., JSON.stringify($RES), ...)
+      - pattern: |
+          <$COMP>{JSON.stringify($RES)}</$COMP>
+
+  # ---------------------------------------------------------------- secrets
+
+  - id: expo-public-env-holds-a-secret
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Anything named EXPO_PUBLIC_* is inlined into the JS bundle at build time and is readable
+      by anyone who downloads the app. This name says it holds a secret. Move it server-side, or
+      rename it if it genuinely is public.
+    patterns:
+      - pattern-regex: EXPO_PUBLIC_[A-Z0-9_]*(SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL|PRIVATE)[A-Z0-9_]*
+
+  - id: hardcoded-credential
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Hardcoded credential. It ships in the bundle and lives in git history forever — rotate it
+      rather than only deleting the line. Read it from the server or from SecureStore.
+    patterns:
+      - pattern-either:
+          - pattern: const $NAME = "$VALUE"
+          - pattern: let $NAME = "$VALUE"
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i).*(apiKey|api_key|secret|password|token|privateKey|clientSecret|authToken).*
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?!.*(\{\{|\$\{|process\.env|YOUR_|REPLACE|EXAMPLE|TODO|xxx|\*\*\*))\S{12,}$
+
+  - id: token-in-async-storage
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      AsyncStorage is unencrypted plain text on disk and is readable on a rooted or jailbroken
+      device, and in some backups. Tokens and credentials belong in expo-secure-store, which
+      uses the iOS Keychain and Android Keystore.
+    patterns:
+      - pattern-either:
+          - pattern: AsyncStorage.setItem("$KEY", ...)
+          - pattern: AsyncStorage.setItem($KEY, ...)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i).*(token|secret|password|credential|auth|session|refresh|jwt).*
+
+  # ---------------------------------------------------------------- transport
+
+  - id: insecure-http-request
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Plaintext HTTP. iOS App Transport Security and Android cleartext policy block this in
+      release builds anyway, so it will pass in development and fail in production. Use HTTPS.
+    # Single-quoted so YAML does not treat the leading [ as a sequence. 10.0.2.2 is the
+    # Android emulator's route to the host machine, so it is a development address too.
+    # A genuine exception gets a `// nosemgrep: insecure-http-request` comment with a reason.
+    pattern-regex: '["''`]http://(?!localhost|127\.0\.0\.1|10\.0\.2\.2)[a-zA-Z0-9.-]+'
+
+  # ---------------------------------------------------------------- injection
+
+  - id: webview-injects-dynamic-javascript
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Injecting a non-literal string into a WebView runs attacker-controlled code with the
+      page's privileges. Build the script from literals, or pass data via postMessage where it
+      stays data.
+    patterns:
+      - pattern-either:
+          - pattern: <WebView injectedJavaScript={$VAR} ... />
+          - pattern: <WebView injectedJavaScriptBeforeContentLoaded={$VAR} ... />
+      - pattern-not: <WebView injectedJavaScript={"..."} ... />
+
+  - id: deep-link-param-used-unchecked
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      A deep-link parameter is attacker-controlled — anyone can craft the URL. Validate it
+      before using it to navigate, fetch, or render. An unchecked redirect target is the usual
+      way this becomes a real bug.
+    patterns:
+      - pattern-inside: |
+          const { ..., $P, ... } = useLocalSearchParams(...)
+          ...
+      - pattern-either:
+          - pattern: router.push($P)
+          - pattern: router.replace($P)
+          - pattern: fetch($P, ...)
+          - pattern: Linking.openURL($P)
+
+  - id: eval-or-function-constructor
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      eval and the Function constructor execute arbitrary strings as code, and are also blocked
+      by Hermes in release builds. Remove it.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+
+  # ---------------------------------------------------------------- platform config
+
+  - id: android-cleartext-traffic-enabled
+    languages: [json]
+    severity: ERROR
+    paths:
+      include: ['app.json', 'app.config.json']
+    message: >-
+      usesCleartextTraffic allows unencrypted HTTP app-wide. For an app handling personal or
+      health data this is not defensible; remove it and fix the endpoint instead.
+    pattern: '"usesCleartextTraffic": true'

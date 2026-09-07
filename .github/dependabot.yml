@@ -1,0 +1,89 @@
+# Dependabot — SCA and automated dependency updates.
+#
+# READ THIS BEFORE WIDENING THE SCOPE.
+#
+# An Expo SDK governs the versions of every package it bundles, through the SDK's own
+# bundledNativeModules map. `expo`, `react`, `react-native`, and every `expo-*` and
+# `react-native-*` module are versioned BY the SDK, not independently of it.
+#
+# So a Dependabot PR bumping expo-camera to its latest release is not an upgrade — it is a
+# desynchronisation. It will pass `npm audit`, pass CI's unit tests, and then fail at
+# `expo-doctor`, or worse, build fine and crash on a device where nobody was looking.
+#
+# Those packages are therefore ignored here on purpose. They move when the SDK moves:
+#
+#     npx expo install --fix          # realign every package to the current SDK
+#     npx expo install <package>      # add one at the SDK-correct version
+#
+# and an SDK upgrade is its own deliberate piece of work — use the `expo-upgrade` skill.
+#
+# What Dependabot DOES own here: everything outside the SDK's control — dev tooling, test
+# libraries, linters, and GitHub Actions. Plus security alerts, which are enabled separately
+# in repository settings and are not configured by this file.
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------- npm
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+
+    # Grouped so a quiet week is one reviewable PR rather than nine that each need CI.
+    groups:
+      dev-tooling:
+        patterns:
+          - "eslint*"
+          - "@typescript-eslint/*"
+          - "prettier"
+          - "typescript"
+          - "@types/*"
+        update-types: ["minor", "patch"]
+      testing:
+        patterns:
+          - "jest*"
+          - "@testing-library/*"
+          - "@playwright/*"
+          - "babel-jest"
+        update-types: ["minor", "patch"]
+
+    ignore:
+      # The SDK itself. Upgrading it is a project, not a dependency bump.
+      - dependency-name: "expo"
+      # Everything the SDK version-governs.
+      - dependency-name: "expo-*"
+      - dependency-name: "react-native"
+      - dependency-name: "react-native-*"
+      - dependency-name: "@expo/*"
+      # React's version is pinned by the SDK to match the bundled React Native.
+      - dependency-name: "react"
+      - dependency-name: "react-dom"
+      - dependency-name: "react-test-renderer"
+      # Majors anywhere need a human deciding, not a bot opening a PR.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+    labels: ["dependencies"]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # ---------------------------------------------------------------- GitHub Actions
+  # Actions are pinned by tag and drift silently. A stale action is a supply-chain risk in
+  # a workflow that already holds repository credentials.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: chore
+      include: scope

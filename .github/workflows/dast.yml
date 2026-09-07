@@ -1,0 +1,67 @@
+name: DAST
+
+# Dynamic analysis — the running app, not the source.
+#
+# Scope note, so nobody over-reads a green check: ZAP scans the WEB build and any HTTP API it
+# can reach. It cannot see the native iOS or Android app. Native traffic is inspected with
+# mitmproxy, which is a hands-on procedure rather than a CI job — see the `dast-scan` skill.
+#
+# On a static react-native-web bundle with no backend, the findings are mostly response
+# headers: CSP, HSTS, X-Content-Type-Options, referrer policy. That is worth having and it is
+# not much. The real return arrives when there is an API to point this at.
+
+on:
+  # Weekly rather than per-PR: a baseline scan takes minutes, and header policy changes far
+  # less often than code does. Also runnable on demand.
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    # Only when something that shapes the served output changes.
+    paths:
+      - "app.json"
+      - "app.config.*"
+      - ".github/workflows/dast.yml"
+
+permissions:
+  contents: read
+  issues: write # ZAP's action files findings as an issue
+
+jobs:
+  zap-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Export the web build
+        run: npx expo export --platform web
+
+      - name: Serve it
+        run: |
+          npx --yes serve dist --listen 8080 &
+          npx --yes wait-on http://localhost:8080 --timeout 60000
+
+      # v0.15.0, not v0.12.0: the older action uploaded its report through the
+      # upload-artifact v3 API, which GitHub shut down — the upload returned HTTP 400
+      # ("The artifact name zap_scan is not valid") and failed the job *after* a clean
+      # scan, which `fail_action: false` below cannot prevent because the failure is in
+      # the action's own reporting step. v0.14.0 moved off the deprecated version.
+      - name: ZAP baseline
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: http://localhost:8080
+          # Passive scan only. An active scan sends attack payloads, which is the right thing
+          # against a staging API you own and the wrong thing against a static bundle.
+          cmd_options: "-a"
+          rules_file_name: .zap/rules.tsv
+          # Report, do not block. A baseline scan on an SPA produces header findings that need
+          # a hosting change, not a code change — failing PRs on them teaches people to ignore
+          # the job. Read the report; fix the headers where the app is actually hosted.
+          fail_action: false

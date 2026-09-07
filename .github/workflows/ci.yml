@@ -1,0 +1,177 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The require-plugins SessionStart hook blocks a session when the declared Claude Code
+# plugins are not installed. CI has no plugin state and never will, so it takes the
+# documented escape hatch rather than every job inheriting a blocked agent session.
+env:
+  CLAUDE_SKIP_PLUGIN_CHECK: 1
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Each step runs even when an earlier one failed, so a PR gets every failure
+      # in one pass rather than one per push.
+      - name: Format
+        if: "!cancelled()"
+        run: npm run format:check --if-present
+
+      - name: Types
+        if: "!cancelled()"
+        run: npx tsc --noEmit
+
+      - name: Lint
+        if: "!cancelled()"
+        run: npm run lint --if-present
+
+      - name: Test
+        if: "!cancelled()"
+        run: npm test --if-present -- --coverage
+
+      - name: Expo doctor
+        if: "!cancelled()"
+        run: npx expo-doctor
+
+      # Four version numbers with four owners and nothing making them agree. The failures are
+      # quiet — a rejected submission, or an OTA update reaching a binary that cannot run it.
+      - name: Versions agree
+        if: "!cancelled()"
+        run: node .claude/scripts/version-check.mjs
+
+  # Web E2E needs no device, so it runs on every PR. Native E2E needs a built binary and a
+  # real emulator — that lives in .eas/workflows/e2e.yml, where Maestro is a first-class job.
+  web-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright
+        run: npx playwright test
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  # Conventional Commits decide the next version bump and write the changelog, so the format
+  # is enforced rather than requested. The husky commit-msg hook catches it locally; this
+  # catches a fresh clone that never ran `npm install`, and anyone who used --no-verify.
+  commits:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # commitlint needs the range, not just the tip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Context values reach the shell through env, never interpolated into `run:` —
+      # a branch name is attacker-controlled on a fork PR, and `${{ }}` splices it into
+      # the script before the shell ever sees it. Semgrep's run-shell-injection rule
+      # fails the build on the interpolated form.
+      - name: Commit messages follow the convention
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          npx commitlint
+          --from "origin/$BASE_REF"
+          --to "$HEAD_SHA"
+          --verbose
+
+  # The hooks and skills steer every session in this repo, so they are tested like code.
+  agent-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Hook guards behave as specified
+        run: node .claude/hooks/hooks.test.mjs
+
+      # Also sweeps for OS-specific files and syntax. The team is split across Windows and
+      # macOS, so a shell script that works for its author breaks silently for half of them.
+      - name: Skills well formed, nothing OS-specific
+        run: node .claude/check-skills.mjs
+
+  # Turns the PR template's Artifacts section from a prompt into a gate: a PR that changes
+  # app code must cite an intent, spec or plan that actually exists in the repo. Nothing
+  # else in CI knew the artifact chain existed, so the loop held only while an agent chose
+  # to cooperate. Skips itself when the diff touches no src/ — a bump needs no spec.
+  artifacts:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needs history to find the merge base
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: PR cites an artifact that exists
+        env:
+          # Through the environment, never interpolated into the run script — a PR body is
+          # attacker-controlled text and `${{ }}` inside a shell line is a script injection.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: node .claude/scripts/check-artifacts.mjs "origin/$BASE_REF"
+
+  # Reports which tests a change touched. Never fails the build — a modified test is often
+  # correct. It makes the edit visible so review decides deliberately.
+  test-integrity:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needs history to find the merge base
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Which tests did this change touch?
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: node .claude/scripts/test-integrity.mjs "origin/$BASE_REF"

@@ -1,0 +1,64 @@
+# Gitleaks configuration.
+#
+# The default ruleset already covers AWS keys, private key blocks, Slack and Stripe tokens and
+# ~150 others. This file extends it with what matters for an Expo app, and — just as important —
+# allowlists the deliberately-fake credentials in the Semgrep fixtures, which would otherwise
+# fire on every commit and train everyone to pass --no-verify.
+#
+# Run:   gitleaks git --staged --redact          (staged changes, pre-commit)
+#        gitleaks git --redact                   (full history)
+#        docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:latest git /repo --redact
+#
+# A finding here means ROTATE FIRST. Deleting the line does not remove it from history, and
+# anyone who cloned the repo already has it.
+
+title = "10x mobile"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------- Expo and EAS
+
+[[rules]]
+id = "expo-token-assignment"
+description = "EXPO_TOKEN or EAS token assigned a literal value — these grant build and submit rights to the whole account"
+regex = '''(?i)\b(EXPO_TOKEN|EAS_TOKEN|EXPO_ACCESS_TOKEN)\b\s*[:=]\s*['"]?[A-Za-z0-9_\-]{20,}['"]?'''
+tags = ["expo", "eas", "ci"]
+
+[[rules]]
+id = "google-api-key"
+description = "Google API key — reaches google-services.json and app.json, and is readable in the shipped bundle"
+regex = '''AIza[0-9A-Za-z\-_]{35}'''
+tags = ["google", "firebase"]
+
+[[rules]]
+id = "sentry-auth-token"
+description = "Sentry auth token — belongs in CI secrets, never in the repo"
+regex = '''(?i)\bsentry[_-]?auth[_-]?token\b\s*[:=]\s*['"]?[A-Za-z0-9]{32,}['"]?'''
+tags = ["sentry"]
+
+# EXPO_PUBLIC_* is inlined into the JS bundle at build time and readable by anyone who
+# downloads the app. A name saying "secret" under that prefix is a contradiction, not a config
+# choice. Semgrep catches this in source; this catches it in config and env files.
+[[rules]]
+id = "expo-public-secret"
+description = "EXPO_PUBLIC_ variable named like a secret — this value ships inside the app bundle"
+regex = '''EXPO_PUBLIC_[A-Z0-9_]*(SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL|PRIVATE)[A-Z0-9_]*\s*[:=]\s*\S+'''
+tags = ["expo", "bundle"]
+
+# ---------------------------------------------------------------- allowlist
+
+[allowlist]
+description = "Paths and values that are deliberately fake"
+paths = [
+  # Security fixtures contain planted credentials on purpose — that is their whole job.
+  '''\.semgrep-tests/.*''',
+  # Lockfiles carry integrity hashes that look like high-entropy secrets.
+  '''package-lock\.json''',
+  '''yarn\.lock''',
+]
+regexes = [
+  # Conventional placeholders. If one of these is a real secret, the problem is the naming.
+  '''(?i)(YOUR_|REPLACE_|EXAMPLE_|PLACEHOLDER|CHANGEME|xxxxxxx|\*\*\*\*)''',
+  '''(?i)process\.env\.[A-Z_]+''',
+]

@@ -1,0 +1,30 @@
+# Line endings, normalised. This team is split across Windows and macOS, and without this file
+# a Windows clone with core.autocrlf=true checks out CRLF — at which point `prettier --check`
+# fails locally while Linux CI passes, which is the worst possible split.
+#
+# `eol=lf` makes every checkout LF on every OS, matching Prettier's default and the .mjs
+# tooling. Set once, here, rather than asking each developer to configure git correctly.
+* text=auto eol=lf
+
+# Generated, and huge. Collapse it in diffs and never merge it by hand — regenerate instead.
+package-lock.json linguist-generated=true -diff
+
+# Binaries: never touch the bytes, never try to diff them.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mp4 binary
+*.webm binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.jks binary
+*.keystore binary
+*.p8 binary
+*.p12 binary
+*.mobileprovision binary

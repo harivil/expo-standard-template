@@ -1,0 +1,25 @@
+# Ship a JavaScript-only change to an existing build, without a store review.
+#
+# Read `versioning` section 5 before using this. The short version: this is safe for JS,
+# styles, copy and already-bundled images, and WRONG for a native dependency, a config
+# plugin, a permission string, or an SDK upgrade — those need a build.
+#
+# The runtimeVersion fingerprint policy enforces that mechanically: a native change moves the
+# fingerprint, so older builds stop matching and the update simply does not reach them.
+#
+# NOT YET RUN — see the header of release-production.yml. Validate with:
+#   eas workflow:validate .eas/workflows/ota-update.yml
+#
+# Store policy still applies: an OTA update may fix bugs and adjust content, but not
+# materially change what the app does. When in doubt, ship a build.
+
+name: ota-update
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish_update:
+    type: update
+    params:
+      channel: production

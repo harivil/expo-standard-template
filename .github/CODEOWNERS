@@ -1,0 +1,31 @@
+# Code owners. feature-loop stages 6 and 7 both gate on "a human code owner approved" — this
+# file is what makes GitHub able to enforce that instead of trusting it.
+#
+# An unknown handle here is IGNORED SILENTLY by GitHub, which turns the gate back off without
+# telling anyone. When someone joins or leaves, change this file in the same PR.
+#
+# Enable "Require review from Code Owners" in branch protection for `main`, or this file only
+# requests reviewers rather than requiring them.
+
+# Default owner for everything not matched below.
+*                       @your-org/mobile-reviewers
+
+# ---------------------------------------------------------------- steers every session
+# The skills, hooks and agents decide how every future change gets built. A quiet edit here is
+# far more expensive than a quiet edit to a screen.
+/.claude/                @your-org/mobile-reviewers
+/AGENTS.md               @your-org/mobile-reviewers
+/REVIEW.md               @your-org/mobile-reviewers
+
+# ---------------------------------------------------------------- release and security
+# Version policy, signing, store submission, and the scanners. A mistake here is a rejected
+# submission, an OTA update on a binary that cannot run it, or a leaked credential.
+/eas.json                @your-org/mobile-reviewers
+/.eas/                   @your-org/mobile-reviewers
+/app.json                @your-org/mobile-reviewers
+/store.config.json       @your-org/mobile-reviewers
+/.github/workflows/      @your-org/mobile-reviewers
+/.semgrep.yml            @your-org/mobile-reviewers
+/.gitleaks.toml          @your-org/mobile-reviewers
+/.zap/                   @your-org/mobile-reviewers
+/commitlint.config.js    @your-org/mobile-reviewers

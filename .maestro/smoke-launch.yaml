@@ -1,0 +1,35 @@
+# Smoke: the app launches and shows its first screen.
+#
+# The cheapest flow that catches the most expensive failure — a build that installs and then
+# dies on launch. Keep it fast and keep it passing; everything else is allowed to be slower.
+#
+# Run:  maestro test -e APP_ID=<your.bundle.id> .maestro/smoke-launch.yaml
+# CI:   .eas/workflows/e2e.yml passes APP_ID from the build.
+#
+# The ids below are real. `home-screen` and `explore-screen` come from <Screen testID>;
+# `tab-explore` from the tab's `tabBarButtonTestID` in src/app/(tabs)/_layout.tsx. A testID
+# becomes accessibilityIdentifier on iOS and resource-id on Android, so one prop serves this
+# flow and the Playwright one. Add it while building the component, not from a test branch.
+#
+# NOT YET RUN on a device from this repo — Maestro is not installed here and Windows has no
+# iOS simulator. The web counterpart in e2e/web/ passes, which proves the ids resolve; the
+# native run is what .eas/workflows/e2e.yml covers.
+
+appId: ${APP_ID}
+---
+- launchApp:
+    clearState: true
+
+# Assert on a testID rather than on copy — a wording change should not fail a smoke test.
+- assertVisible:
+    id: "home-screen"
+
+# Prove the app is interactive, not just painted.
+- tapOn:
+    id: "tab-explore"
+- assertVisible:
+    id: "explore-screen"
+
+- back
+- assertVisible:
+    id: "home-screen"

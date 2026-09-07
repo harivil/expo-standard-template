@@ -1,0 +1,15 @@
+{
+  "configVersion": 0,
+  "apple": {
+    "info": {
+      "en-US": {
+        "title": "10X Health",
+        "subtitle": "Delivery harness reference app",
+        "description": "A reference Expo application demonstrating a complete delivery pipeline across iOS, Android and web.\n\nFill this in with real copy before the first submission — App Store Connect shows it verbatim.",
+        "keywords": ["expo", "reference", "harness"],
+        "privacyPolicyUrl": "https://example.com/privacy",
+        "supportUrl": "https://example.com/support"
+      }
+    }
+  }
+}

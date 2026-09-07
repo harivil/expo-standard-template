@@ -1,0 +1,18 @@
+node_modules/
+.expo/
+dist/
+build/
+coverage/
+.evidence/
+playwright-report/
+test-results/
+package-lock.json
+expo-env.d.ts
+*.sarif
+
+# Semgrep fixtures are asserted BY LINE NUMBER in .claude/scripts/semgrep-test.mjs.
+# Reformatting them silently breaks every rule assertion.
+.semgrep-tests/
+
+# The rule patterns are hand-quoted YAML regexes; a reformat risks changing what they match.
+.semgrep.yml

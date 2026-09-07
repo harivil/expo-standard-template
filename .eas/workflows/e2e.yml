@@ -1,0 +1,54 @@
+# End-to-end tests on real emulators and simulators, via EAS Workflows.
+#
+# Maestro is a first-class job type here (`type: maestro`), so there is no custom plumbing —
+# EAS builds the app, boots a device, installs the binary and runs the flows.
+#
+# Prerequisites, one time:
+#   1. eas build:configure
+#   2. add an `e2e-test` profile to eas.json producing a debug .apk / .app:
+#
+#        "e2e-test": {
+#          "withoutCredentials": true,
+#          "ios":     { "simulator": true },
+#          "android": { "buildType": "apk" }
+#        }
+#
+# Run by hand:  eas workflow:run .eas/workflows/e2e.yml
+
+name: e2e
+
+on:
+  # A feature's own flow runs before merge. The full regression suite runs on a schedule
+  # instead — E2E is slow, and a suite that adds ten minutes to every push gets disabled.
+  pull_request:
+    branches: ["*"]
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  build_android:
+    type: build
+    params:
+      platform: android
+      profile: e2e-test
+
+  test_android:
+    needs: [build_android]
+    type: maestro
+    params:
+      build_id: ${{ needs.build_android.outputs.build_id }}
+      flow_path: [".maestro/smoke-launch.yaml"]
+
+  build_ios:
+    type: build
+    params:
+      platform: ios
+      profile: e2e-test
+
+  # This is what covers iOS for teammates on Windows, who have no local simulator.
+  test_ios:
+    needs: [build_ios]
+    type: maestro
+    params:
+      build_id: ${{ needs.build_ios.outputs.build_id }}
+      flow_path: [".maestro/smoke-launch.yaml"]

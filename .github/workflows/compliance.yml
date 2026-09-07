@@ -1,0 +1,129 @@
+name: Compliance
+
+# App Store and Google Play pre-submission compliance, via Greenlight.
+#
+# Scope note, so nobody over-reads a green check: this is a STATIC scan. It proves a flow exists
+# in the source, never that the flow works — a Delete Account button wired to nothing passes.
+# GREENLIT means no CRITICAL or HIGH findings. It does not mean Apple has approved the app.
+#
+# This is not a testing layer and it does not replace Maestro (.maestro/, and .eas/workflows/e2e.yml)
+# or Playwright (e2e/web/). Those own login, navigation, forms and business workflows. This owns
+# store compliance, privacy configuration and rejection risk. Full detail:
+# .claude/skills/greenlight/SKILL.md
+#
+# The built artifacts are scanned separately, in .eas/workflows/release-production.yml — a source
+# scan structurally cannot see the PrivacyInfo.xcprivacy that prebuild generates into the gitignored
+# /ios, nor the merged Android manifest. Both gates are needed; neither is sufficient.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Weekly, and this one is not decoration. Play's target-API-level and Play Billing deadlines fall
+  # on published dates, so a scan that passed in March starts failing in September with no code
+  # change at all. A compliance scan is a statement about a moment; the policies move on.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: compliance-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write # required to upload SARIF to the Security tab
+
+env:
+  # The require-plugins SessionStart hook blocks a session when the declared Claude Code plugins
+  # are not installed. CI has no plugin state and never will.
+  CLAUDE_SKIP_PLUGIN_CHECK: 1
+
+  # THE GATE TOGGLE. Report-only today: this repo carries pre-existing placeholder and privacy
+  # debt (example.com URLs in store.config.json, no purpose strings, no privacy manifest), and
+  # some of the fixes are product decisions rather than code. A red check nobody is able to clear
+  # is a check everybody learns to scroll past, and it takes the real findings with it.
+  #
+  # To make compliance blocking, do BOTH in one commit — see the `greenlight` skill:
+  #   1. set this to "true"
+  #   2. add "compliance" to the required-checks list in .claude/scripts/protect-main.mjs,
+  #      then run: node .claude/scripts/protect-main.mjs --apply
+  # Only the first, and the job goes red without blocking a merge. Only the second, and a required
+  # check is registered that can never fail.
+  GREENLIGHT_ENFORCE: "false"
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Keyed on the pin, so a version bump misses the cache deliberately.
+      - name: Cache the pinned scanner
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/greenlight
+          key: greenlight-${{ runner.os }}-${{ hashFiles('.greenlight-version') }}
+
+      # greenlight is a Go binary, so it is not in package.json and Dependabot cannot see it. The
+      # version is pinned in .greenlight-version and the download is checksum-verified — a
+      # compliance scanner is exactly the binary you cannot afford to run unverified.
+      - name: Install greenlight (pinned, checksum-verified)
+        run: node .claude/scripts/install-greenlight.mjs >> "$GITHUB_PATH"
+
+      - name: Which version actually ran
+        run: greenlight version
+
+      # Two passes, the same shape as security.yml's semgrep job: the first reports every severity
+      # so nothing is invisible, the second decides whether the build fails. A preflight takes
+      # milliseconds, so the second run costs nothing.
+      - name: Findings — every severity
+        if: ${{ !cancelled() }}
+        run: greenlight preflight .
+
+      - name: SARIF for code scanning
+        if: ${{ !cancelled() }}
+        run: greenlight preflight . --format sarif --output greenlight.sarif
+
+      - name: JSON report for triage
+        if: ${{ !cancelled() }}
+        run: greenlight preflight . --format json --output greenlight-report.json
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: ${{ !cancelled() && hashFiles('greenlight.sarif') != '' }}
+        with:
+          sarif_file: greenlight.sarif
+          category: greenlight
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: greenlight-report
+          path: |
+            greenlight.sarif
+            greenlight-report.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      # The gate. `--exit-code` fails on CRITICAL and HIGH, and on a scanner that crashed mid-scan,
+      # so an incomplete scan never reports as a pass.
+      #
+      # This job never modifies source. It reports, and it passes or fails. Nothing here commits,
+      # and no rule is ever disabled to get a green check.
+      - name: Gate on CRITICAL and HIGH
+        if: ${{ !cancelled() && env.GREENLIGHT_ENFORCE == 'true' }}
+        run: greenlight preflight . --exit-code
+
+      - name: Gate is off — say so out loud
+        if: ${{ !cancelled() && env.GREENLIGHT_ENFORCE != 'true' }}
+        run: |
+          echo "### Compliance: report-only" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "GREENLIGHT_ENFORCE is \"false\", so findings above did **not** fail this job." >> "$GITHUB_STEP_SUMMARY"
+          echo "Findings are in the Security tab under the \`greenlight\` category." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "GREENLIT means no CRITICAL or HIGH findings in a static scan. It does **not** mean Apple has approved the app." >> "$GITHUB_STEP_SUMMARY"

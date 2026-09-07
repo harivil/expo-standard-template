@@ -1,0 +1,4 @@
+# Secrets, before they reach history. Deleting the line later does not remove it — the only
+# real fix is rotating the credential, so the commit is the last cheap moment to catch it.
+# Skipped silently when gitleaks is not installed; CI scans every push regardless.
+node .claude/scripts/scan-staged.mjs
