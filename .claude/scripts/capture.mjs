@@ -13,9 +13,13 @@
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const RECORD_SECONDS = 12;
+
+// Resolved from this file rather than the working directory, so capture works from anywhere.
+const SHOOT_WEB = resolve(dirname(fileURLToPath(import.meta.url)), "shoot-web.mjs");
 
 // ---------------------------------------------------------------- arguments
 
@@ -166,33 +170,42 @@ function iosVideo() {
 
 // ---------------------------------------------------------------- web
 
+// Delegated to shoot-web.mjs, which exports the app and serves the export rather than asking
+// for a dev server to already be running. Three reasons that is the right shape here:
+//
+//   - it needs nothing running, so one command is genuinely one command
+//   - the Metro dev server never fires the browser `load` event in this project, so a plain
+//     `playwright screenshot` against :8081 waits out its timeout and reports a false gap
+//   - it shoots light AND dark, which is half of what this repo asks a reviewer to check
+//
+// It is a separate script because it is worth running on its own, and because the export and
+// the little static server are more machinery than belongs inside this file.
 function webShot() {
-  const file = join(outDir, "web.png");
-  const url = process.env.WEB_URL || "http://localhost:8081";
-  if (!have("npx", ["--no-install", "playwright", "--version"])) {
-    return record(
-      "web",
-      "screenshot",
-      "unavailable",
-      "playwright not installed — run 'npx expo install -- -D @playwright/test' or capture the browser by hand",
-    );
+  if (!existsSync(SHOOT_WEB)) {
+    return record("web", "screenshot", "unavailable", `${SHOOT_WEB} is missing`);
   }
-  const r = run(
-    "npx",
-    ["--no-install", "playwright", "screenshot", "--wait-for-timeout=3000", url, file],
-    {
-      timeout: 90000,
-    },
-  );
-  if (!r.ok || !existsSync(file)) {
-    return record(
-      "web",
-      "screenshot",
-      "unavailable",
-      `could not reach ${url} — is 'npm run web' running?`,
-    );
+
+  const r = spawnSync(process.execPath, [SHOOT_WEB, outDir], {
+    stdio: "inherit",
+    timeout: 12 * 60 * 1000,
+    windowsHide: true,
+  });
+
+  for (const scheme of ["light", "dark"]) {
+    const file = join(outDir, `web-${scheme}.png`);
+    if (existsSync(file)) {
+      record("web", `screenshot (${scheme})`, "captured", file);
+    } else {
+      record(
+        "web",
+        `screenshot (${scheme})`,
+        "unavailable",
+        r.error
+          ? `shoot-web.mjs could not run: ${r.error}`
+          : "shoot-web.mjs produced nothing — read its output above",
+      );
+    }
   }
-  record("web", "screenshot", "captured", file);
 }
 
 function webVideo() {

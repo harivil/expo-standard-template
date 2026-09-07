@@ -130,8 +130,15 @@ jobs:
 
       # Also sweeps for OS-specific files and syntax. The team is split across Windows and
       # macOS, so a shell script that works for its author breaks silently for half of them.
+      # It additionally holds ci-local.mjs to the jobs declared here, so "verify runs what CI
+      # runs" stays true rather than becoming something people used to believe.
       - name: Skills well formed, nothing OS-specific
         run: node .claude/check-skills.mjs
+
+      # A config that is present and inert enforces nothing while looking like enforcement.
+      # This checks both halves of every tool — the config, and the thing that runs it.
+      - name: Toolchain configured and actually wired up
+        run: node .claude/scripts/toolchain-check.mjs
 
   # Turns the PR template's Artifacts section from a prompt into a gate: a PR that changes
   # app code must cite an intent, spec or plan that actually exists in the repo. Nothing

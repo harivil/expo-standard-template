@@ -15,7 +15,14 @@ One paragraph. What a user can do now that they could not before.
 
 ## Evidence
 
-Drag files from `.evidence/<slug>/` — GitHub hosts them and renders `.mp4` inline.
+The **`open-pr`** skill fills this table in for you — it captures the surfaces this machine can
+reach, uploads them, and writes the rendered images here:
+
+```bash
+node .claude/skills/open-pr/scripts/open-pr.mjs <slug> --capture --what "one sentence"
+```
+
+Otherwise drag files from `.evidence/<slug>/` — GitHub hosts them and renders `.mp4` inline.
 
 | Surface | Before | After |
 | ------- | ------ | ----- |
@@ -23,8 +30,13 @@ Drag files from `.evidence/<slug>/` — GitHub hosts them and renders `.mp4` inl
 | Android |        |       |
 | Web     |        |       |
 
-For a fix, the **before** recording should show the bug happening. That clip is what makes this
-reviewable by someone who never reproduced it.
+Two things no capture here covers, so say them in words: **iOS from a Windows machine** (no
+simulator exists — name who covers it), and **any screen behind the login guard**, which an unaided
+capture cannot reach.
+
+For a fix, the **before** recording should show the bug happening — and it has to be captured
+_before_ the work, because afterwards the before is gone. That clip is what makes this reviewable
+by someone who never reproduced it.
 
 **Logic-only change?** Say so here instead, and paste the test output or the numbers that prove it.
 
