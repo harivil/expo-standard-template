@@ -339,6 +339,27 @@ function fillSection(lines, heading, text) {
   return [...lines.slice(0, start), text, ...lines.slice(end)];
 }
 
+/**
+ * Cite only the artifacts that exist.
+ *
+ * The template lists all three stages with `<slug>` in each path, so filling the slug in
+ * blind cites files that were never written — and `check-artifacts.mjs` fails a PR whose
+ * cited artifact does not exist, by design. A Small change legitimately has no intent and no
+ * plan (see the feature-loop skill's sizing table), so the honest body says which stages were
+ * skipped rather than naming a file nobody wrote. Getting this wrong guarantees a red check
+ * on every small change, which is how a gate stops being read.
+ */
+function citeOnlyRealArtifacts(lines) {
+  return lines.map((line) => {
+    const m = line.match(
+      /^(\s*-\s*[^:]+:\s*)`(docs\/(?:intent|specs|plans)\/[^`]+\.md)`\s*$/,
+    );
+    if (!m) return line;
+    if (existsSync(join(ROOT, m[2]))) return line;
+    return `${m[1]}_not written — this stage was skipped for this change_`;
+  });
+}
+
 function commitList() {
   const log = git("log", "--no-merges", "--pretty=- %s", `${baseBranch}..HEAD`);
   return log.ok && log.stdout ? log.stdout : `- (no commits found against ${baseBranch})`;
@@ -364,10 +385,13 @@ function composeBody(hosted, title) {
     }
     const what = val("--what");
     if (what) body = fillSection(body, "What changed", what);
-    return body
-      .join("\n")
-      .replace(/^#\s*<slug>.*$/m, `# ${title}`)
-      .replace(/<slug>/g, slug);
+    return citeOnlyRealArtifacts(
+      body
+        .join("\n")
+        .replace(/^#\s*<slug>.*$/m, `# ${title}`)
+        .replace(/<slug>/g, slug)
+        .split("\n"),
+    ).join("\n");
   }
 
   return [
