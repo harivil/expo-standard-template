@@ -56,15 +56,15 @@ jobs:
   compliance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
       # Keyed on the pin, so a version bump misses the cache deliberately.
       - name: Cache the pinned scanner
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/greenlight
           key: greenlight-${{ runner.os }}-${{ hashFiles('.greenlight-version') }}
@@ -93,13 +93,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: greenlight preflight . --format json --output greenlight-report.json
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         if: ${{ !cancelled() && hashFiles('greenlight.sarif') != '' }}
         with:
           sarif_file: greenlight.sarif
           category: greenlight
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: greenlight-report
