@@ -93,6 +93,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: greenlight preflight . --format json --output greenlight-report.json
 
+      # GitHub's SARIF ingest rejects the entire file when any one result has an empty
+      # `locations` array — "locationFromSarifResult: expected at least one location" — so a
+      # single project-level finding ("no app icon", "no privacy manifest", "required-reason API
+      # undeclared") silently took every other finding in the run with it. Those findings are
+      # real and have no line to point at; this anchors them to app.json:1 and says so in the
+      # message rather than dropping them.
+      - name: Give project-level findings a location
+        if: ${{ !cancelled() && hashFiles('greenlight.sarif') != '' }}
+        run: node .claude/scripts/sarif-locations.mjs greenlight.sarif
+
       - uses: github/codeql-action/upload-sarif@v4
         if: ${{ !cancelled() && hashFiles('greenlight.sarif') != '' }}
         with:
